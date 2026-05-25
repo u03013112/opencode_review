@@ -474,6 +474,7 @@ llm:
   base_url: https://aitool-api.businsights.net/v1
   api_key: sk-4hp7LRsv8aGAcdoCK4dYv3eaPBe5OAtIcuUBLjysXXoTJ30t
   model: deepseek-v4-pro
+  max_context: 400000            # 模型支持 1M，但限制 400K 避免幻觉
   temperature: 0
   max_tokens: 4000
 
