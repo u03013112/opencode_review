@@ -24,30 +24,24 @@
 
 ## 架构
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       CLI (click)                                │
-│  retro list | retro analyze | retro report | retro apply        │
-└─────────┬───────────────────────────────────────────────────────┘
-          │
-┌─────────▼───────────────────────────────────────────────────────┐
-│  Pipeline 阶段（每个 session 依次执行）                           │
-│                                                                  │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐    │
-│  │  提取    │──▶│  切割    │──▶│  分析    │──▶│  报告    │    │
-│  │ Extract  │   │  Chunk   │   │ Analyze  │   │ Report   │    │
-│  └──────────┘   └──────────┘   └──────────┘   └──────────┘    │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  状态管理 State（message 级增量水位线）                     │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-          │
-┌─────────▼────────────────────┐
-│  数据源                       │
-│  SQLite: opencode.db          │
-│  Session → Message → Part    │
-└──────────────────────────────┘
+```mermaid
+graph TD
+    CLI["CLI (click)<br/>retro list | retro analyze | retro report | retro apply"]
+    CLI --> Pipeline
+
+    subgraph Pipeline["Pipeline 阶段（每个 session 依次执行）"]
+        direction LR
+        Extract["提取<br/>Extract"] --> Chunk["切割<br/>Chunk"]
+        Chunk --> Analyze["分析<br/>Analyze"]
+        Analyze --> Report["报告<br/>Report"]
+    end
+
+    State["状态管理 State<br/>message 级增量水位线"]
+    Pipeline -.-> State
+    State -.-> Pipeline
+
+    DB[("数据源<br/>SQLite: opencode.db<br/>Session → Message → Part")]
+    Pipeline --> DB
 ```
 
 ---
