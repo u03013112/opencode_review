@@ -5,10 +5,10 @@ state_dir: ./.state
 llm:
   base_url: https://aitool-api.businsights.net/v1
   api_key: sk-4hp7LRsv8aGAcdoCK4dYv3eaPBe5OAtIcuUBLjysXXoTJ30t
-  model: deepseek-v4-pro
+  model: deepseek-v4-flash
   max_context: 400000
   temperature: 0
-  max_tokens: 4000
+  max_tokens: 8000
 
 extraction:
   max_reasoning_chars: 500
@@ -17,10 +17,11 @@ extraction:
   skip_sessions_under_messages: 5
 
 chunking:
-  target_min_turns: 3
-  target_max_tokens: 6000
+  target_min_turns: 5
+  target_max_tokens: 50000
   time_gap_boundary_minutes: 30
-  use_llm_refinement: true
+  use_llm_refinement: false
+  max_concurrent_analysis: 3
 
 analysis:
   confidence_threshold: 0.5

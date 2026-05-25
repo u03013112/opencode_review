@@ -123,7 +123,6 @@ def analyze(session_ids, analyze_all, since):
 
         click.echo(f"  切割为 {len(chunks)} 个块")
 
-        analyses = []
         sessions_meta = db.list_sessions(limit=1)
         session_date = ""
         for sm in db.list_sessions(limit=9999):
@@ -136,10 +135,9 @@ def analyze(session_ids, analyze_all, since):
             session_title = None
             session_project = None
 
-        for i, chunk in enumerate(chunks):
-            click.echo(f"  分析块 {i+1}/{len(chunks)}...")
-            analysis = analyzer.analyze_chunk(chunk, session_date=session_date)
-            analyses.append(analysis)
+        max_workers = chunking_cfg.get("max_concurrent_analysis", 10)
+        click.echo(f"  并发分析 {len(chunks)} 个块 (workers={max_workers})...")
+        analyses = analyzer.analyze_chunks_concurrent(chunks, session_date=session_date, max_workers=max_workers)
 
         report = generate_session_report(
             session_id=sid,

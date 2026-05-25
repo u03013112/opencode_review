@@ -20,8 +20,8 @@ TOPIC_SHIFT_SIGNALS = re.compile(
 def chunk_session(
     turns: list[NormalizedTurn],
     time_gap_minutes: int = 30,
-    target_max_tokens: int = 6000,
-    target_min_turns: int = 3,
+    target_max_tokens: int = 50000,
+    target_min_turns: int = 5,
 ) -> list[SemanticChunk]:
     if not turns:
         return []
@@ -32,8 +32,8 @@ def chunk_session(
     boundaries = _find_boundaries(turns, time_gap_minutes)
     chunks = _split_at_boundaries(turns, boundaries)
 
-    # 合并过小的 chunks
-    merged = _merge_small_chunks(chunks, target_min_turns)
+    # 合并 chunks 直到达到 target_max_tokens
+    merged = _merge_by_token_budget(chunks, target_max_tokens, target_min_turns)
 
     return merged
 
@@ -107,24 +107,25 @@ def _split_at_boundaries(
     return chunks
 
 
-def _merge_small_chunks(
-    chunks: list[SemanticChunk], min_turns: int
+def _merge_by_token_budget(
+    chunks: list[SemanticChunk], max_tokens: int, min_turns: int
 ) -> list[SemanticChunk]:
     if len(chunks) <= 1:
         return chunks
 
     merged: list[SemanticChunk] = []
     buffer: list[NormalizedTurn] = []
+    buffer_tokens = 0
 
     for chunk in chunks:
-        if len(chunk.turns) < min_turns and buffer:
-            buffer.extend(chunk.turns)
-        elif buffer and len(buffer) < min_turns:
-            buffer.extend(chunk.turns)
-        else:
-            if buffer:
-                merged.append(_make_chunk(buffer, buffer[0].message_id))
+        chunk_tokens = chunk.token_count
+        if buffer and (buffer_tokens + chunk_tokens > max_tokens and len(buffer) >= min_turns):
+            merged.append(_make_chunk(buffer, buffer[0].message_id))
             buffer = list(chunk.turns)
+            buffer_tokens = chunk_tokens
+        else:
+            buffer.extend(chunk.turns)
+            buffer_tokens += chunk_tokens
 
     if buffer:
         merged.append(_make_chunk(buffer, buffer[0].message_id))
