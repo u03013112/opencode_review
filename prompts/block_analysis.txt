@@ -1,0 +1,42 @@
+你正在分析一段 AI 编码助手会话的任务块。
+
+对话内容：
+{conversation}
+
+上下文：
+- 总轮数: {turn_count}
+- 使用的工具: {tool_summary}
+- 会话日期: {date}
+
+任务：分析此块并返回 JSON：
+{
+  "topic": "一句话描述尝试做什么",
+  "outcome": "success|partial|failure|unclear",
+  "first_try_success": true|false,
+  "corrections_required": 0,
+  "skills_referenced": [],
+  "kb_referenced": [],
+  "failure_root_cause": null,
+  "failure_detail": null,
+  "missing_context": null,
+  "recommendations": [],
+  "confidence": 0.0
+}
+
+recommendations 格式（最多 3 条）：
+{
+  "type": "new_skill|kb_entry|skill_update|workflow",
+  "title": "简短标题",
+  "detail": "具体建议",
+  "priority": "high|medium|low"
+}
+
+规则：
+- first_try_success = true 仅当 agent 完成任务且用户没有发送纠正
+- 用户纠正包括："不对"、"我是说"、"改一下"、"actually"、重述同样的请求
+- outcome = "success" 要求任务完全完成且用户满意
+- outcome = "partial" = 最终完成但经过纠正
+- outcome = "failure" = 从未完成或用户放弃
+- missing_context 要具体（如"lark-base 字段公式语法的 skill"而非"更多上下文"）
+- 忽略风格偏好 — 只标记实质性失败
+- 只返回 JSON，不要其他文字

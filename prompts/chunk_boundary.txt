@@ -1,0 +1,6 @@
+给定以下对话片段，判断用户意图在哪里切换到了新的独立任务。
+返回 JSON: {"boundaries": [turn_index, ...], "confidence": 0.0-1.0}
+只在明确不同主题时切割。如果不确定，保持为一个 chunk。
+
+对话片段：
+{conversation}
