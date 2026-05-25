@@ -1,35 +1,50 @@
-# OpenCode Session Retrospective — Design Document
+# OpenCode 会话回顾分析 — 设计文档
 
-## Overview
+## 概述
 
-A Python CLI tool that retrospectively analyzes OpenCode AI coding sessions to extract knowledge, surface failure patterns, and produce actionable improvement artifacts (skill drafts, KB entries, pattern documentation).
+一个 Python CLI 工具，回顾性分析 OpenCode AI 编码会话，提取知识、发现失败模式、产出可执行的改进建议（skill 草案、知识库条目、模式文档）。
 
-**Core Value Proposition:** Turn 990+ accumulated sessions into a reusable knowledge base, so similar problems never require re-discovery.
+**核心价值：** 将 990+ 积累的会话转化为可复用的知识库，避免同类问题反复探索。
+
+**最终目标：** 跑通后固化为 OpenCode skill，可随时对任意有价值的会话执行分析。
 
 ---
 
-## Architecture
+## 关键设计决策
+
+| 决策项 | 选择 | 理由 |
+|--------|------|------|
+| LLM | DeepSeek V4 Pro (via new-api) | 便宜、128K 上下文、够用 |
+| 数据源 | 直接读 SQLite | 增量能力最强，第三方工具不支持 message 级增量 |
+| 增量粒度 | **Message 级**（非 session 级） | 大会话只分析新增部分，避免重复分析 |
+| 输出流程 | 分析 → 建议报告 → 人工确认 → 执行补充 | Human-in-the-loop |
+| Subagent | 摘要模式（1-2 行描述结果） | 节省 token，细节不影响质量判断 |
+
+---
+
+## 架构
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       CLI (click)                                │
-│  retro list | retro analyze | retro report | retro status       │
+│  retro list | retro analyze | retro report | retro apply        │
 └─────────┬───────────────────────────────────────────────────────┘
           │
 ┌─────────▼───────────────────────────────────────────────────────┐
-│  Pipeline Stages (sequential per session)                        │
+│  Pipeline 阶段（每个 session 依次执行）                           │
 │                                                                  │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐    │
-│  │ Extract  │──▶│  Chunk   │──▶│ Analyze  │──▶│  Report  │    │
+│  │  提取    │──▶│  切割    │──▶│  分析    │──▶│  报告    │    │
+│  │ Extract  │   │  Chunk   │   │ Analyze  │   │ Report   │    │
 │  └──────────┘   └──────────┘   └──────────┘   └──────────┘    │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  State Manager (incremental processing, skip analyzed)    │   │
+│  │  状态管理 State（message 级增量水位线）                     │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
           │
 ┌─────────▼────────────────────┐
-│  Data Source                  │
+│  数据源                       │
 │  SQLite: opencode.db          │
 │  Session → Message → Part    │
 └──────────────────────────────┘
@@ -37,55 +52,55 @@ A Python CLI tool that retrospectively analyzes OpenCode AI coding sessions to e
 
 ---
 
-## Project Structure
+## 项目结构
 
 ```
 opencode_review/
 ├── src/
 │   └── opencode_review/
 │       ├── __init__.py
-│       ├── cli.py              # Click CLI entry point
-│       ├── db.py               # SQLite reader, query helpers
-│       ├── extractor.py        # Session → normalized conversation
-│       ├── chunker.py          # Semantic chunking logic
-│       ├── analyzer.py         # LLM analysis calls
-│       ├── reporter.py         # Markdown report generation
-│       ├── state.py            # Incremental state tracking
-│       └── models.py           # Dataclasses: Session, Chunk, Analysis
+│       ├── cli.py              # Click CLI 入口
+│       ├── db.py               # SQLite 读取，查询辅助
+│       ├── extractor.py        # Session → 标准化对话
+│       ├── chunker.py          # 语义切割逻辑
+│       ├── analyzer.py         # LLM 分析调用
+│       ├── reporter.py         # Markdown 报告生成
+│       ├── state.py            # 增量状态追踪（message 级水位线）
+│       └── models.py           # 数据类定义
 ├── prompts/
-│   ├── chunk_boundary.txt      # Prompt: topic boundary detection
-│   └── block_analysis.txt     # Prompt: quality + failure analysis
+│   ├── chunk_boundary.txt      # Prompt：主题边界检测
+│   └── block_analysis.txt      # Prompt：质量+失败分析
 ├── output/
-│   ├── reports/                # Per-session Markdown reports
-│   └── artifacts/              # Extracted skills, KB entries
+│   ├── reports/                # 单 session Markdown 报告
+│   └── recommendations/        # 待确认的建议（skill/KB）
 ├── .state/
-│   └── processed.json          # Incremental processing state
-├── config.yaml                 # LLM model, thresholds, DB path
+│   └── processed.json          # 增量处理状态
+├── config.yaml                 # 配置文件
 ├── pyproject.toml
-├── DESIGN.md
-└── README.md
+└── DESIGN.md
 ```
 
 ---
 
-## Data Model
+## 数据模型
 
 ```python
 @dataclass
 class SessionMeta:
     id: str
-    parent_id: str | None       # None = top-level session
+    parent_id: str | None       # None = 顶层 session
     created_at: datetime
     message_count: int
-    has_children: bool          # Has subagent sessions
-    title: str | None           # First user message excerpt (50 chars)
-    project_path: str | None    # Working directory
+    has_children: bool          # 有 subagent session
+    title: str | None           # 第一条 user message 前 50 字
+    project_path: str | None    # 工作目录
 
 @dataclass
 class NormalizedTurn:
-    role: str                   # "user" | "assistant" | "tool_result"
-    content: str                # Cleaned text (see extraction rules)
+    role: str                   # "user" | "assistant" | "subagent_summary"
+    content: str                # 清洗后文本
     turn_index: int
+    message_id: str             # 原始 message id，用于增量水位线
     has_tool_calls: bool
     tool_names: list[str]       # e.g. ["bash", "read", "write"]
 
@@ -94,8 +109,8 @@ class SemanticChunk:
     chunk_id: str
     session_id: str
     turns: list[NormalizedTurn]
-    start_index: int
-    end_index: int
+    start_message_index: int    # 在 session 内的 message 序号
+    end_message_index: int
     token_count: int
 
 @dataclass
@@ -107,239 +122,251 @@ class ChunkAnalysis:
     corrections_required: int
     skills_referenced: list[str]
     kb_referenced: list[str]
-    failure_root_cause: str | None  # "missing_skill" | "unclear_instruction" | "agent_limit" | "knowledge_gap"
+    failure_root_cause: str | None
+    # "missing_skill" | "unclear_instruction" | "agent_limit" | "knowledge_gap"
     failure_detail: str | None
     missing_context: str | None
-    recommendations: list[str]
+    recommendations: list[Recommendation]
     confidence: float
+
+@dataclass
+class Recommendation:
+    type: str                   # "new_skill" | "kb_entry" | "skill_update" | "workflow"
+    title: str                  # 简短标题
+    detail: str                 # 具体建议内容
+    priority: str               # "high" | "medium" | "low"
+    source_chunk_id: str        # 来源 chunk
+    status: str = "pending"     # "pending" | "approved" | "rejected" | "applied"
 ```
 
 ---
 
-## Stage 1: Data Extraction
+## 阶段 1：数据提取
 
-### The 2GB Problem
+### 2GB 问题
 
-Total data is ~2.5GB, but 95% is tool call content (file reads, bash outputs). An LLM doesn't need full tool output to assess quality — it needs to know *what happened*.
+总数据 ~2.5GB，95% 是 tool 调用内容（文件读取、bash 输出）。LLM 不需要完整 tool output 来评估质量 — 只需知道「发生了什么」。
 
-### Part Type Handling
+### Part 类型处理
 
-| Part Type | Size | Action | Rationale |
-|-----------|------|--------|-----------|
-| `text` | 41MB | ✅ Include fully | Core conversation, always needed |
-| `reasoning` | 7.6MB | ⚠️ Truncate to 500 chars | Reveals agent intent without verbosity |
-| `step-start/finish` | 30MB | ✅ Extract tool name only | Structural signal |
-| `tool` | 2.1GB | ❌ Summarize to 1 line | **This is the data volume problem** |
-| `patch` | 4MB | ⚠️ Diff stats only | `+N/-N lines in file.py` |
-| `file` | 390MB | ❌ Filename + size only | Content not needed for quality assessment |
-| `compaction` | 56KB | ❌ Skip | Internal compression artifacts |
+| Part Type | 大小 | 处理方式 | 理由 |
+|-----------|------|----------|------|
+| `text` | 41MB | ✅ 完整保留 | 核心对话内容 |
+| `reasoning` | 7.6MB | ⚠️ 截断到 500 字 | 看意图不需要全文 |
+| `step-start/finish` | 30MB | ✅ 只提取 tool name | 结构信号 |
+| `tool` | 2.1GB | ❌ 摘要为 1 行 | **数据量主要来源** |
+| `patch` | 4MB | ⚠️ 只保留 diff 统计 | `+N/-N 行 in file.py` |
+| `file` | 390MB | ❌ 只保留文件名+大小 | 内容对质量评估无用 |
+| `compaction` | 56KB | ⚠️ 作为降级方案 | 原文丢失时用 compaction 摘要代替 |
 
-### Tool Result Summarization
+### Tool 调用摘要格式
 
-For each tool call, extract a 1-line summary:
 ```
-bash(command="npm test") → exit_code=1, stderr_lines=12 (FAIL)
-read(file="src/auth.ts") → 340 lines
-write(file="src/auth.ts") → success
-task(subagent="explore", desc="Find auth") → completed, 5 results
+bash(command="npm test") → exit=1, stderr 12行 (失败)
+read(file="src/auth.ts") → 340 行
+write(file="src/auth.ts") → 成功
+task(subagent="explore", desc="Find auth") → 完成
 ```
 
-**Estimated output:** 990 sessions × ~3-15K tokens extracted = manageable for LLM.
+### Subagent 处理
 
-### Subagent Handling
-
-**Strategy: Inline subagent sessions into parent context.**
-
-Subagent work is logically part of the parent task. Analyzing separately loses the "why" (parent context). Inline preserves the full causal chain.
+**策略：摘要模式**（不完整 inline）
 
 ```python
-def flatten_session(session_id: str, db: DB, depth: int = 0) -> list[NormalizedTurn]:
-    if depth > 2:  # Cap recursion to avoid explosion
-        return [NormalizedTurn(role="system", content="[subagent depth exceeded, skipped]", ...)]
-    
-    turns = get_session_turns(session_id)
-    for i, turn in enumerate(turns):
-        if turn.spawns_subagent:
-            child_turns = flatten_session(turn.child_session_id, db, depth + 1)
-            # Insert with [SUBAGENT:name] prefix for context
-            turns = turns[:i+1] + child_turns + turns[i+1:]
-    return turns
+def summarize_subagent(child_session_id: str, db: DB) -> str:
+    """将 subagent session 压缩为 1-2 行摘要"""
+    child_meta = db.get_session_meta(child_session_id)
+    # 取最后一条 assistant text message 作为结果摘要
+    last_response = db.get_last_assistant_text(child_session_id)
+    return f"[子任务: {child_meta.title}] 结果: {last_response[:200]}"
 ```
+
+理由：subagent 的细节对失败归因不重要，重要的是「父任务要求了什么、子任务返回了什么」。
 
 ---
 
-## Stage 2: Semantic Chunking
+## 阶段 2：语义切割
 
-### Goal
+### 目标
 
-Split a session into coherent **task blocks**. Each block = one user intent + agent execution cycle.
+将 session 切分为独立的**任务块**。每个块 = 一个用户意图 + agent 执行周期。
 
-### Algorithm: Hybrid Rule + LLM
+### 算法：规则为主 + LLM 兜底
 
-**Phase 1: Rule-based pre-segmentation (free, fast)**
+**第一阶段：规则切割（免费、快速）**
 
-Boundary signals (any triggers a candidate boundary):
-- User message after assistant "completion" signal ("done", "let me know", "complete")
-- Explicit topic transition: "now let's", "next", "different question", "can you also"
-- Tool pattern reset: completely different tool sequence starts
-- Time gap > 30 minutes between turns
-- User sends new high-level instruction after a completed sub-task
+边界信号（任一触发即为候选边界）：
+- Assistant 发出完成信号（"done"、"完成"、"let me know"）后的下一条 user message
+- 明确的话题切换："现在来"、"next"、"另外"、"顺便"
+- Tool 模式突变：工具序列完全不同（如 10 轮 bash → 突然开始 read/write）
+- 时间间隔 > 30 分钟
+- 用户在子任务完成后发出新的高级指令
 
-**Phase 2: LLM boundary refinement (for ambiguous cases only)**
+**第二阶段：LLM 边界修正（仅对异常 chunk）**
 
-Only invoke LLM when rule-based produces chunks > 8000 tokens or < 3 turns:
+仅当规则产出 chunk > 8000 tokens 或 < 3 turns 时调用：
 
 ```
 Prompt (chunk_boundary.txt):
-Given this conversation excerpt, identify where the user's intent shifts to a new distinct task.
-Return JSON: {"boundaries": [turn_index, ...], "confidence": 0.0-1.0}
-Only split if clearly distinct topics. When in doubt, keep as one chunk.
+给定以下对话片段，判断用户意图在哪里切换到了新的独立任务。
+返回 JSON: {"boundaries": [turn_index, ...], "confidence": 0.0-1.0}
+只在明确不同主题时切割。如果不确定，保持为一个 chunk。
 ```
 
-**Target chunk size:** 20–80 turns, ~2000–6000 tokens per chunk after extraction.
+**目标 chunk 大小：** 20-80 turns，提取后 ~2000-6000 tokens。
 
-**Sessions with <10 turns:** Treat as single chunk, skip boundary detection.
-
-### Technology Options
-
-| Library | Use Case | When to Use |
-|---------|----------|-------------|
-| Rule-based (built-in) | Primary chunker | Always (phase 1) |
-| LLM (gpt-4o-mini) | Boundary refinement | Oversized/undersized chunks |
-| `semantic-text-splitter` | Fallback for pure-text sessions | If rules fail |
+**小 session（<10 turns）：** 视为单 chunk，跳过边界检测。
 
 ---
 
-## Stage 3: LLM Analysis
+## 阶段 3：LLM 分析
 
-### Per-Chunk Analysis Prompt
+### 模型配置
+
+```yaml
+llm:
+  base_url: https://aitool-api.businsights.net/v1
+  api_key: sk-4hp7LRsv8aGAcdoCK4dYv3eaPBe5OAtIcuUBLjysXXoTJ30t
+  model: deepseek-v4-pro       # OpenAI 兼容格式
+  temperature: 0
+  max_tokens: 4000
+```
+
+### 分析 Prompt
 
 ```
-You are analyzing a conversation block from an AI coding assistant session.
+你正在分析一段 AI 编码助手会话的任务块。
 
-CONVERSATION:
+对话内容：
 {normalized_turns}
 
-CONTEXT:
-- Total turns in block: {turn_count}
-- Tools used: {tool_summary}
-- Session date: {date}
-- Available skills at time: {skill_list}
+上下文：
+- 总轮数: {turn_count}
+- 使用的工具: {tool_summary}
+- 会话日期: {date}
+- 当时可用的 skill: {skill_list}
 
-TASK: Analyze this block and return JSON:
+任务：分析此块并返回 JSON：
 {
-  "topic": "one sentence description of what was attempted",
+  "topic": "一句话描述尝试做什么",
   "outcome": "success|partial|failure|unclear",
   "first_try_success": true|false,
   "corrections_required": N,
   "skills_referenced": ["skill_name"],
   "kb_referenced": ["kb_name"],
   "failure_root_cause": null | "missing_skill|unclear_instruction|agent_limit|knowledge_gap",
-  "failure_detail": "one sentence explaining what went wrong",
-  "missing_context": "what info/skill/pattern would have enabled first-try success",
-  "recommendations": ["actionable item, max 3"],
+  "failure_detail": "一句话解释什么出了问题",
+  "missing_context": "什么信息/skill/模式可以让首次就成功",
+  "recommendations": [
+    {
+      "type": "new_skill|kb_entry|skill_update|workflow",
+      "title": "简短标题",
+      "detail": "具体建议",
+      "priority": "high|medium|low"
+    }
+  ],
   "confidence": 0.0-1.0
 }
 
-RULES:
-- first_try_success = true ONLY if agent completed the task without user sending corrections
-- User corrections include: "that's wrong", "no I meant", "fix the", "actually", re-stating the same request
-- outcome = "success" requires task fully completed to user satisfaction
-- outcome = "partial" = eventually completed but after corrections
-- outcome = "failure" = never completed or user gave up
-- missing_context should be SPECIFIC (e.g. "skill for lark-base field formula syntax" not "better context")
-- Ignore stylistic preferences ("I prefer X") — only flag substantive failures
+规则：
+- first_try_success = true 仅当 agent 完成任务且用户没有发送纠正
+- 用户纠正包括："不对"、"我是说"、"改一下"、"actually"、重述同样的请求
+- outcome = "success" 要求任务完全完成且用户满意
+- outcome = "partial" = 最终完成但经过纠正
+- outcome = "failure" = 从未完成或用户放弃
+- missing_context 要具体（如"lark-base 字段公式语法的 skill"而非"更多上下文"）
+- 忽略风格偏好（"我喜欢X"）— 只标记实质性失败
+- recommendations 不超过 3 条
 ```
 
-### Model Selection Strategy
+### 成本估算
 
-| Analysis Type | Model | Cost per 1K input tokens |
-|---------------|-------|--------------------------|
-| Chunk boundary refinement | gpt-4o-mini / claude-haiku | $0.15/M |
-| Primary block analysis | gpt-4o-mini | $0.15/M input, $0.60/M output |
-| Complex failure deep-dive (escalation) | claude-sonnet / gpt-4o | $3/M input |
+DeepSeek V4 Pro 定价（via new-api）：
+- Input: ~¥1/1M tokens
+- Output: ~¥2/1M tokens
 
-**Default: gpt-4o-mini for everything.** Escalate to sonnet only for chunks where confidence < 0.5.
+| 场景 | Sessions | 预估成本 |
+|------|----------|----------|
+| 全量 990 sessions | 990 | < ¥5 |
+| 每周增量 (~50 new) | 50 | < ¥0.5 |
+| 单 session 分析 | 1 | < ¥0.01 |
 
 ---
 
-## Stage 4: Report Generation
+## 阶段 4：报告生成
 
-### Per-Session Report (`output/reports/{session_id}.md`)
+### 单 Session 报告 (`output/reports/{session_id}.md`)
 
 ```markdown
-# Session Analysis: {title}
-**Date:** {date} | **Duration:** {duration} | **Messages:** {count} | **Project:** {path}
+# 会话分析: {title}
+**日期:** {date} | **时长:** {duration} | **消息数:** {count} | **项目:** {path}
 
-## Summary
-{2-3 sentence session overview}
+## 摘要
+{2-3 句话 session 概述}
 
-## Blocks
+## 任务块
 
-### Block 1: {topic}
-- **Outcome:** ✅ Success (first try)
-- **Tools:** bash, read, write
-- **Turns:** 12
-- **Skills Used:** lark-im
+### 块 1: {topic}
+- **结果:** ✅ 一次成功
+- **工具:** bash, read, write
+- **轮数:** 12
+- **Skills:** lark-im
 
-> {brief description}
-
----
-
-### Block 2: {topic}
-- **Outcome:** ⚠️ Partial (2 corrections)
-- **Tools:** bash, lark-cli
-- **Turns:** 23
-- **Skills Used:** none
-
-> {description}
-
-**Root Cause:** Missing skill — no documented workflow for X
-**What Was Missing:** A skill covering Y procedure with Z specifics
-**Recommendations:**
-1. Create skill `lark-Y` documenting the Z workflow
-2. Add KB entry for X pattern
+> {简要描述}
 
 ---
 
-## Quality Scorecard
-| Metric | Value |
-|--------|-------|
-| Blocks analyzed | 3 |
-| First-try success rate | 67% (2/3) |
-| Failures | 0 |
-| Skills referenced | lark-im, lark-base |
-| Knowledge gaps found | 1 |
+### 块 2: {topic}
+- **结果:** ⚠️ 部分成功（2 次纠正）
+- **工具:** bash, lark-cli
+- **轮数:** 23
+- **Skills:** 无
 
-## Extracted Recommendations
-1. **[New Skill]** Create `lark-Y` for Z workflow
-2. **[KB Entry]** Document X pattern in knowledge base
+> {描述}
+
+**根因:** 缺少 skill — 没有 X 操作的文档化流程
+**缺失内容:** Y 模式的 skill
+**建议:** 创建 `lark-Y` skill 文档化 Z 流程
+
+---
+
+## 质量评分卡
+| 指标 | 值 |
+|------|-----|
+| 分析块数 | 3 |
+| 一次成功率 | 67% (2/3) |
+| 失败数 | 0 |
+| 引用的 Skills | lark-im, lark-base |
+| 发现的知识缺口 | 1 |
+
+## 待确认建议
+1. **[新 Skill]** 创建 `lark-Y` 用于 Z 流程
+2. **[知识库]** 将 X 模式补充到知识库
 ```
 
-### Aggregate Report (`output/reports/weekly_{date}.md`)
-
-Weekly summary across all sessions processed in that run:
-- Overall first-try success rate
-- Top failure root causes (ranked by frequency)
-- Most-referenced skills (usage vs. failure correlation)
-- Recurring knowledge gaps (cluster similar `missing_context`)
-- Priority recommendations (impact × frequency)
-
 ---
 
-## Stage 5: Incremental State
+## 阶段 5：增量状态管理（Message 级）
 
-### State File: `.state/processed.json`
+### 核心设计：Message 级水位线
+
+不同于 session 级增量（整个 session 要么跑过，要么没跑过），我们追踪每个 session 已分析到第几条 message。
+
+### 状态文件: `.state/processed.json`
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "last_run": "2026-05-25T10:00:00Z",
   "sessions": {
     "ses_abc123": {
       "analyzed_at": "2026-05-20T08:00:00Z",
-      "message_count_at_analysis": 47,
-      "chunk_count": 3,
+      "analyzed_up_to_message_index": 47,
+      "total_messages_at_analysis": 47,
+      "chunks": [
+        {"chunk_id": "c1", "start_idx": 0, "end_idx": 22},
+        {"chunk_id": "c2", "start_idx": 23, "end_idx": 47}
+      ],
       "report_path": "output/reports/ses_abc123.md",
       "outcome_summary": {"success": 2, "partial": 1, "failure": 0}
     }
@@ -347,86 +374,102 @@ Weekly summary across all sessions processed in that run:
 }
 ```
 
-### Processing Decision Logic
+### 增量处理逻辑
 
 ```python
-def should_analyze(session_id: str, current_msg_count: int, state: dict) -> bool:
+def get_unanalyzed_messages(session_id: str, state: dict, db: DB) -> tuple[int, int]:
+    """返回 (start_index, end_index) 指示需要分析的 message 范围"""
+    current_msg_count = db.get_message_count(session_id)
     prev = state["sessions"].get(session_id)
+
     if prev is None:
-        return True  # Never analyzed
-    if current_msg_count > prev["message_count_at_analysis"]:
-        return True  # Session grew (user continued it)
-    return False     # No change, skip
+        return (0, current_msg_count)  # 全新 session，全部分析
+
+    if current_msg_count > prev["analyzed_up_to_message_index"]:
+        return (prev["analyzed_up_to_message_index"], current_msg_count)  # 只分析新增
+
+    return None  # 无变化，跳过
 ```
 
-### Weekly Workflow
+### 上下文衔接
 
-```bash
-# Every week (or when you feel like it):
-retro analyze --since 7d    # Only processes new/changed sessions
-retro report --since 7d     # Generates weekly aggregate
+当增量分析新增 message 时，取前一个 chunk 的最后 3 条 message 作为 overlap context：
+
+```python
+def get_overlap_context(session_id: str, state: dict, db: DB) -> list[NormalizedTurn]:
+    """获取前一轮分析的尾部 context，用于衔接"""
+    prev = state["sessions"].get(session_id)
+    if prev is None or not prev["chunks"]:
+        return []
+
+    last_chunk = prev["chunks"][-1]
+    # 取最后一个 chunk 的最后 3 条 turn 作为 overlap
+    return db.get_turns(session_id, last_chunk["end_idx"] - 3, last_chunk["end_idx"])
 ```
-
-Old sessions → already analyzed, skipped automatically.
-Updated sessions → re-analyzed in full (re-chunking is cheap, don't try to diff).
 
 ---
 
-## Cost Estimates
+## Human-in-the-loop 流程
 
-### Per-Session Token Budget
+### 工作流
 
-| Component | Tokens (est.) |
-|-----------|---------------|
-| Extracted turns (text only, after summarization) | 3,000–15,000 |
-| Tool call summaries | 500–2,000 |
-| Per-chunk analysis prompt overhead | ~400 |
-| **Total input per session (avg)** | ~8,000 |
-| **Output per chunk** | ~300–500 |
+```
+1. retro analyze <session_id>
+   → 分析完成，生成报告 + 建议列表
 
-### Total Cost Projections
+2. retro report <session_id>
+   → 查看报告和建议
 
-| Scenario | Sessions | Estimated Cost (gpt-4o-mini) |
-|----------|----------|------------------------------|
-| Full backfill (all 990) | 990 | ~$1.50 |
-| Weekly incremental (~50 new) | 50 | ~$0.08 |
-| Single session re-analysis | 1 | ~$0.002 |
+3. retro apply <session_id>
+   → 交互式确认每条建议：
+     [1/3] 新 Skill: lark-base-formula
+           详情: 文档化多维表格公式字段的创建流程...
+           (a)pprove / (r)eject / (s)kip? > a
 
-**Extremely cheap.** No need for aggressive cost optimization at this scale.
+   → 确认后自动执行：
+     - new_skill → 生成 skill 骨架到 ~/.agents/skills/ 或 ~/.config/opencode/skills/
+     - kb_entry → 调用 lastwar-kb-write 写入知识库
+     - skill_update → 修改现有 skill 文件
+```
 
-### Optimization Levers (if needed later)
+### 建议状态流转
 
-1. **Skip trivial sessions:** <5 messages → mark as "trivial", no LLM call
-2. **Pre-filter for failures:** Run cheap heuristic (user message contains "wrong"/"fix"/"no") before LLM
-3. **Batch similar chunks:** Group chunks by tool patterns, analyze in batch
-4. **Cache embeddings:** If using semantic chunker, cache to avoid re-embedding
+```
+pending → approved → applied
+              ↓
+          rejected (不再提示)
+```
 
 ---
 
-## CLI Interface
+## CLI 接口
 
 ```bash
-# List sessions with metadata (for manual selection)
+# 列出 session 及元数据
 retro list [--limit 20] [--since 7d] [--unanalyzed-only] [--project PATH]
 
-# Analyze specific sessions
+# 分析指定 session
 retro analyze <session_id> [session_id ...]
-retro analyze --all                    # All unprocessed
-retro analyze --since 7d               # New sessions from last 7 days
+retro analyze --all                    # 所有未处理的
+retro analyze --since 7d               # 最近 7 天的新/变化 session
 
-# Generate reports
-retro report [--since 7d] [--output weekly_report.md]
-retro report --aggregate               # Cross-session summary
+# 查看报告
+retro report <session_id>              # 单 session 报告
+retro report --aggregate [--since 7d]  # 跨 session 聚合
 
-# State management
-retro status                           # Show processed/pending counts
-retro reset <session_id>               # Force re-analysis
-retro reset --all                      # Reset everything
+# 审阅并执行建议
+retro apply <session_id>               # 交互式确认
+retro apply --auto                     # 全部自动批准（谨慎使用）
+
+# 状态管理
+retro status                           # 显示已处理/待处理统计
+retro reset <session_id>               # 强制重新分析
+retro reset --all                      # 重置所有
 ```
 
 ---
 
-## Configuration (`config.yaml`)
+## 配置 (`config.yaml`)
 
 ```yaml
 db_path: ~/.local/share/opencode/opencode.db
@@ -434,16 +477,16 @@ output_dir: ./output
 state_dir: ./.state
 
 llm:
-  provider: openai              # openai | anthropic
-  model: gpt-4o-mini           # Primary analysis model
-  escalation_model: gpt-4o     # For low-confidence re-analysis
+  base_url: https://aitool-api.businsights.net/v1
+  api_key: sk-4hp7LRsv8aGAcdoCK4dYv3eaPBe5OAtIcuUBLjysXXoTJ30t
+  model: deepseek-v4-pro
   temperature: 0
-  max_tokens_per_call: 2000
+  max_tokens: 4000
 
 extraction:
   max_reasoning_chars: 500
   max_tool_summary_chars: 200
-  subagent_depth_limit: 2
+  subagent_mode: summary          # "summary" | "inline"
   skip_sessions_under_messages: 5
 
 chunking:
@@ -453,20 +496,49 @@ chunking:
   use_llm_refinement: true
 
 analysis:
-  confidence_threshold: 0.5    # Below this → escalate to stronger model
-  skip_trivial: true           # Skip sessions with <5 messages
+  confidence_threshold: 0.5       # 低于此值 → 标记需人工审核
+  max_recommendations_per_chunk: 3
+
+apply:
+  skill_output_dir: ~/.config/opencode/skills
+  kb_write_enabled: true          # 是否允许自动写入知识库
 ```
 
 ---
 
-## Open Design Questions (For Discussion)
+## 固化为 Skill 的计划
 
-1. **Subagent detail level:** Should subagent turns be fully inlined or summarized to "subagent did X, result: Y"? Full inline gives better failure detection but increases token count.
+跑通单 session 端到端测试后，将整个流程封装为 OpenCode skill：
 
-2. **Skill availability tracking:** To detect "missing skill" properly, we need to know which skills were available at the time of the session. Should we track this in state, or infer from file system history?
+```
+~/.config/opencode/skills/session-review/
+├── SKILL.md                    # Skill 描述 + 触发条件
+└── scripts/                    # 可选：内嵌脚本
+```
 
-3. **Human-in-the-loop:** After analysis, should there be a "review & confirm" step where you approve/reject/edit the analysis before it's finalized? Or trust the LLM output?
+**触发词：** "分析会话"、"review session"、"会话回顾"、"retro"
 
-4. **Artifact generation:** Should the tool auto-generate skill stubs / KB entries, or just recommend them in the report for manual creation?
+**Skill 内容：** 指导 agent 执行 `retro analyze` → 展示报告 → 等待确认 → 执行 `retro apply`
 
-5. **Session selection UX:** For `retro list`, what metadata helps you decide which sessions to analyze? Date, duration, message count, first user message? Should there be a TUI picker?
+---
+
+## 测试计划
+
+### 单 Session 端到端测试
+
+1. 选一个中等复杂度的历史 session（~50 messages，有成功有失败）
+2. 跑完整 pipeline：extract → chunk → analyze → report
+3. 验证：
+   - 提取是否正确处理了 tool 摘要
+   - 切割是否合理（每块一个任务）
+   - 分析是否准确识别了成功/失败
+   - 建议是否可执行
+4. 增量测试：模拟 session 新增消息，验证只分析新增部分
+
+### 验收标准
+
+- [ ] 单 session 分析 < 30 秒
+- [ ] Token 消耗与预估匹配（< ¥0.01/session）
+- [ ] 报告可读、建议可执行
+- [ ] 增量分析正确（不重复分析旧内容）
+- [ ] 建议确认→执行流程跑通
