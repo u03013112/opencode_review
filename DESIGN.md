@@ -14,7 +14,7 @@
 
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
-| LLM | DeepSeek V4 Pro (via new-api) | 便宜、128K 上下文、够用 |
+| LLM | DeepSeek V4 Pro (via new-api) | 便宜、限制 400K 上下文、够用 |
 | 数据源 | 直接读 SQLite | 增量能力最强，第三方工具不支持 message 级增量 |
 | 增量粒度 | **Message 级**（非 session 级） | 大会话只分析新增部分，避免重复分析 |
 | 输出流程 | 分析 → 建议报告 → 人工确认 → 执行补充 | Human-in-the-loop |
